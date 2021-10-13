@@ -1,0 +1,927 @@
+#!/usr/bin/perl
+#
+# A simple implementation of CASL assembler.
+# Copyright (c) 1997-2000, Hiroyuki Ohsaki.
+# All rights reserved.
+#
+# $Id: casl2,v 1.19 2008/09/19 03:00:49 o-mizuno Exp $
+#
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+# A simple implementation of CASL II assembler.
+# Based on a simple implementation of CASL assembler.
+# Extended by Osamu Mizuno for CASL II compatibility (2001-2008).
+#
+
+use Getopt::Std;
+use File::Basename;
+use strict;
+use integer;
+
+# All valid instructions must have an entry in this hash.  CODE is the
+# object code of the instruction, and TYPE is the type of instruction
+# (e.g., ``op1'' indicates it takes two or three operands).
+my %INSTTBL = (    # COMET II instructions
+    'NOP'  => { code => 0x00, type => 'op4' },
+    'LD'   => { code => 0x10, type => 'op5' },
+    'ST'   => { code => 0x11, type => 'op1' },
+    'LAD'  => { code => 0x12, type => 'op1' },
+    'ADDA' => { code => 0x20, type => 'op5' },
+    'SUBA' => { code => 0x21, type => 'op5' },
+    'ADDL' => { code => 0x22, type => 'op5' },
+    'SUBL' => { code => 0x23, type => 'op5' },
+    'AND'  => { code => 0x30, type => 'op5' },
+    'OR'   => { code => 0x31, type => 'op5' },
+    'XOR'  => { code => 0x32, type => 'op5' },
+    'CPA'  => { code => 0x40, type => 'op5' },
+    'CPL'  => { code => 0x41, type => 'op5' },
+    'SLA'  => { code => 0x50, type => 'op1' },
+    'SRA'  => { code => 0x51, type => 'op1' },
+    'SLL'  => { code => 0x52, type => 'op1' },
+    'SRL'  => { code => 0x53, type => 'op1' },
+    'JMI'  => { code => 0x61, type => 'op2' },
+    'JNZ'  => { code => 0x62, type => 'op2' },
+    'JZE'  => { code => 0x63, type => 'op2' },
+    'JUMP' => { code => 0x64, type => 'op2' },
+    'JPL'  => { code => 0x65, type => 'op2' },
+    'JOV'  => { code => 0x66, type => 'op2' },
+    'PUSH' => { code => 0x70, type => 'op2' },
+    'POP'  => { code => 0x71, type => 'op3' },
+    'CALL' => { code => 0x80, type => 'op2' },
+    'RET'  => { code => 0x81, type => 'op4' },
+    'SVC'  => { code => 0xf0, type => 'op2' },
+
+    # pseudo instructions
+    'START' => { type => 'start' },
+    'END'   => { type => 'end' },
+    'DS'    => { type => 'ds' },
+    'DC'    => { type => 'dc' },
+
+    # CASL II macros
+    'IN'    => { type => 'in' },
+    'OUT'   => { type => 'out' },
+    'RPUSH' => { type => 'rpush' },
+    'RPOP'  => { type => 'rpop' },
+);
+
+# addresses of IN/OUT system calls --- these MACROs are expanded
+# to call this address after pushing its arguments on stack.
+my $SYS_IN  = 0xfff0;
+my $SYS_OUT = 0xfff2;
+
+my $VERSION = '1.1.1 (12 Sep 2008)';
+my $DEBUG   = 0;
+my $DDEBUG  = 0;
+
+# global variables of currently processing file and line number.
+# These variables are used in &error.
+my $__file;
+my $__line;
+
+# global variables for START address checking
+my $actual_label  = "";
+my $virtual_label = "";
+my $first_start   = 1;
+my $var_scope     = "";
+
+sub usage {
+    my $prog = basename($0);
+    die <<EOF;
+usage: $prog [-av] file
+ -a          turn on verbose listings
+ -v          display version and exit
+EOF
+}
+
+sub error {
+    my $msg = shift;
+
+    printf STDERR "%s:%d: %s\n", $__file, $__line, $msg;
+    exit 1;
+}
+
+# Check the validity of label LABEL.  If not valid, display error and
+# exit.
+sub check_label {
+    my $label = shift;
+    print STDERR "check_label($label)\n" if $DEBUG;
+
+    error "Invalid label \"$label\""
+      unless ( $label =~ /^[A-Z][0-9A-Za-z]{0,7}$/ );
+}
+
+# Expand the string VAL to corresponding decimal number --- symbol is
+# resolved and hexadecimal number is converted to decimal.
+sub expand_label {
+    my ( $hashref, $val ) = @_;
+    print STDERR "expand_label($hashref, $val)\n" if $DEBUG;
+
+    if ( $val =~ /^\#([\da-f][\da-f][\da-f][\da-f])$/i ) {
+        eval qq(\$val = 0x$1;);    # convert hex to decimal
+    }
+    elsif ( defined $hashref->{$val} ) {
+        $val = $hashref->{$val}->{val};
+    }
+    if ( $val !~ /^[+-]?\d+$/ ) {
+        my $sym = $val;
+        if ( $val =~ /^([A-Za-z\d]+)\.([A-Za-z\d]+)$/ ) {
+            if ( $1 eq $2 ) {
+                $sym = "$2";
+            }
+            else {
+                $sym = "$2 in routine $1";
+            }
+        }
+        error "Undefined symbol \"$sym\"";
+    }
+    $val &= 0xffff;
+    return $val;
+}
+
+# Register a label LABEL in the symbol table HASHREF with the value
+# VAL.  If LABEL is already defined, display error and exit.
+sub add_label {
+    my ( $hashref, $label, $val ) = @_;
+
+    check_label($label);
+
+    # On addition of a label, add var_scope.
+    my $uniq_label = $var_scope . "." . $label;
+    error "Label \"$label\" already defined"
+      if ( defined $hashref->{$uniq_label} );
+    $hashref->{$uniq_label} = { val => $val, file => $__file, line => $__line };
+
+    print STDERR "add_label($uniq_label : $val)\n" if $DEBUG;
+}
+
+# Update a label LABEL in the symbol table HASHREF into the value
+# VAL.  If LABEL has not defined yet, display error and exit.
+sub update_label {
+    my ( $hashref, $label, $val ) = @_;
+
+    check_label($label);
+    my $uniq_label = $var_scope . "." . $label;
+    error "Label \"$label\" is not defined"
+      if ( !defined $hashref->{$uniq_label} );
+    $hashref->{$uniq_label} = { val => $val, file => $__file, line => $__line };
+
+    print STDERR "update_label($uniq_label : $val)\n" if $DEBUG;
+}
+
+# Register a literal in the symbol table HASHREF with the value
+# VAL.
+sub add_literal {
+    my ( $hashref, $literal, $val ) = @_;
+
+    #check_literal($literal);
+    $hashref->{$literal} = { val => $val, file => $__file, line => $__line };
+}
+
+# Check the validity of decimal number NUMBER. If not valid, display
+# error and exit.
+sub check_decimal {
+    my $number = shift;
+
+    print STDERR "check_decimal($number)\n" if $DEBUG;
+    error "\"$number\" must be decimal"     if ( $number !~ /^[+-]?\d+$/ );
+}
+
+# Check the validity of register REGISTER.  Return the register number
+# (0 - 4). If not valid, display error and exit.  Otherwise,
+sub check_register {
+    my $register = shift;
+
+    print STDERR "check_register($register)\n" if $DEBUG;
+    error "Invalid register \"$register\""
+      if ( $register !~ /^(GR)?([0-7])$/ );
+    return $2;
+}
+
+# Generate a one-byte code of VAL at ADDRESS in HASHREF.
+sub gen_code1 {
+    my ( $hashref, $address, $val ) = @_;
+
+    $hashref->{$address} = {
+        val  => $val,
+        file => $__file,
+        line => $__line
+    };
+}
+
+# Generate two-byte codes from CODE, GR, ADR, and XR at ADDRESS in
+# HASHREF.
+sub gen_code2 {
+    my ( $hashref, $address, $code, $gr, $adr, $xr ) = @_;
+
+    $gr = check_register($gr);
+    $xr = check_register($xr);
+
+    my $val = ( $code << 8 ) + ( $gr << 4 ) + $xr;
+    $hashref->{ $address++ } = {
+        val  => $val,
+        file => $__file,
+        line => $__line
+    };
+    $hashref->{ $address++ } = {
+        val  => $adr,
+        file => $__file,
+        line => $__line
+    };
+}
+
+sub gen_code3 {
+    my ( $hashref, $address, $code, $gr1, $gr2 ) = @_;
+
+    $gr1 = check_register($gr1);
+    $gr2 = check_register($gr2);
+
+    my $val = ( $code << 8 ) + ( $gr1 << 4 ) + $gr2;
+    $hashref->{ $address++ } = {
+        val  => $val,
+        file => $__file,
+        line => $__line
+    };
+}
+
+# Parse the source file FILE, register all symbols to SYMTBLP,
+# generate code in MEMORYP.
+sub pass1 {
+    my ( $file, $symtblp, $memoryp, $bufp ) = @_;
+    my ($in_block);
+    my ( $label, $inst, $opr );
+    my $address = 0;
+
+    my @literal_stack = ();
+
+    open( IN, $file ) || die "$file: $!\n";
+    $__line = 0;
+    while (<IN>) {
+        $__line++;
+        print STDERR "$__line: $_\n" if $DEBUG;
+        chomp;
+
+        # remove comment --- take care of ``;'' between single quotes.
+        if (/(^[^;]*\'[^\']*\'.*?)(;.*)?$/) {
+            $_ = $1;
+        }
+        else {
+            s/;.*$//;
+        }
+
+        # remove trailing spaces
+        s/\s+$//;
+
+        # skip to next line if neither label nor instruction is specified.
+        next if /^$/;
+
+        # extract each field
+        if (/^(\S+)?\s+([A-Z]+)(\s+(.*)?)?$/) {
+            ( $label, $inst, $opr ) = ( $1, $2, $4 );
+            $label = '' unless defined($label);
+            $inst  = '' unless defined($inst);
+            $opr   = '' unless defined($opr);
+
+            #	    $opr = $1 if (/(^[^\s]*\'[^\']*\'.*?)\s.*$/);
+            print STDERR "label/inst/opr = $label/$inst/$opr\n" if $DEBUG;
+        }
+        else {
+            error "Syntax error";
+        }
+
+        # keep every line in @buf for later use
+        my $uniq_label;
+        if ( $label ne '' ) {
+            $uniq_label = $var_scope . "." . $label;
+        }
+        else {
+            $uniq_label = '';
+        }
+        $$bufp[$.] = "$uniq_label\t$inst\t$opr";
+
+        # register label to the symbol table
+        if ( $label && $in_block ) {
+            add_label( $symtblp, $label, $address );
+
+            # check if label is referred from START instruction.
+            # if so, update the address of START's label
+            if ( $label eq $actual_label ) {
+                update_label( $symtblp, $virtual_label, $address );
+                $actual_label = 0;
+            }
+        }
+
+        # generate object code according the type of instruction
+        if ($inst) {
+            error "Illegal instruction \"$inst\""
+              unless ( defined $INSTTBL{$inst} );
+
+            my $type = $INSTTBL{$inst}->{type};
+
+            # my @opr = split(/,\s*/, $opr);
+            # replacement of above split
+            my @opr = ();
+            if ( $opr !~ /^\s*$/ ) {
+                my $i      = 0;
+                my $opid   = 0;
+                my $ophead = 0;
+                my $mode   = "opr";
+                while ( $opid < length($opr) ) {
+
+                    # search , as a separator of operand
+                    if ( $mode eq "opr" && substr( $opr, $opid, 1 ) eq "," ) {
+
+                        # oprand mode
+                        $opr[$i] = substr( $opr, $ophead, $opid - $ophead );
+                        $i++;
+                        $ophead = $opid + 1;
+                    }
+                    elsif ( $mode eq "opr" && substr( $opr, $opid, 1 ) eq "'" )
+                    {
+                        # string mode
+                        $mode = "str";
+                    }
+                    elsif ( $mode eq "str" && substr( $opr, $opid, 1 ) eq "'" )
+                    {
+                        if ( substr( $opr, $opid, 2 ) eq "''" ) {
+                            $opid += 2;
+                            next;
+                        }
+                        else {
+                            $mode = "opr";
+                        }
+                    }
+                    $opid++;
+                }
+                $opr[$i] = substr( $opr, $ophead, $opid - $ophead );
+
+                for ( 0 .. $#opr ) {
+                    $opr[$_] =~ s/^\s*//;
+                    $opr[$_] =~ s/\s*$//;
+                    print STDERR $opr[$_] . ":" if $DDEBUG;
+                }
+                print STDERR "\n" if $DDEBUG;
+            }
+
+            # accurately, this definition is wrong in CASL II
+            # DC    'hogehoge, hugahuga.'
+            # DC    'h'',ogehoge, hugahuga.'
+            # LD    GR1,=','
+
+            # START must be the first instruction
+            error "NO \"START\" instruction found"
+              if ( !$in_block and ( $type ne 'start' ) );
+
+            # GR0 cannot be used as an index register.
+            error "Can't use GR0 as an index register"
+              if ( defined $opr[2] and $opr[2] =~ /^(GR)?0$/ );
+
+            # instructions with GR, adr, and optional XR
+            if ( $type eq 'op1' ) {
+                error "Invalid operand \"$opr\""
+                  unless ( 1 <= $#opr and $#opr <= 2 );
+                $opr[2] = 0 unless defined( $opr[2] );
+
+                # register Literal
+                if ( $opr[1] =~ /=.+/ ) {
+                    my $ss = $opr[1];
+                    $ss =~ s/\\/\\\\/g;
+                    $ss =~ s/\+/\\\+/g;
+                    $ss =~ s/\*/\\\*/g;
+                    $ss =~ s/\?/\\\?/g;
+                    $ss =~ s/\./\\\./g;
+                    $ss =~ s/\(/\\\(/g;
+                    $ss =~ s/\)/\\\)/g;
+                    $ss =~ s/\[/\\\[/g;
+                    $ss =~ s/\]/\\\]/g;
+                    $ss =~ s/\{/\\\{/g;
+                    $ss =~ s/\}/\\\}/g;
+                    $ss =~ s/\|/\\\|/g;
+
+                    if ( grep( /$ss$/, @literal_stack ) == () ) {
+                        push( @literal_stack, $opr[1] );
+                    }
+                    print STDERR "LITERAL: $opr[1]\n" if $DEBUG;
+                }
+                elsif ($opr[1] =~ /^[A-Z][a-zA-Z0-9]*/
+                    && $opr[1] !~ /^GR[0-7]$/ )
+                {
+                    $opr[1] = $var_scope . "." . $opr[1];
+                }
+
+                gen_code2( $memoryp, $address, $INSTTBL{$inst}->{code},
+                    $opr[0], $opr[1], $opr[2] );
+
+                $address += 2;
+
+                # instructions with adr, and optional XR
+            }
+            elsif ( $type eq 'op2' ) {
+                error "Invalid operand \"$opr\""
+                  unless ( 0 <= $#opr and $#opr <= 1 );
+                error "Can't use GR0 as an index register"
+                  if ( defined $opr[1] and $opr[1] =~ /^(GR)?0$/ );
+
+                $opr[1] = 0 unless defined( $opr[1] );
+
+                if ( $opr[0] !~ /^GR[0-7]$/ && $opr[0] =~ /^[A-Z][a-zA-Z0-9]*/ )
+                {
+                    if ( $inst =~ /CALL/i ) {
+                        $opr[0] = $opr[0] . "." . $opr[0];
+                    }
+                    else {
+                        $opr[0] = $var_scope . "." . $opr[0];
+                    }
+                }
+
+                gen_code2( $memoryp, $address, $INSTTBL{$inst}->{code},
+                    0, $opr[0], $opr[1] );
+                $address += 2;
+
+                # instructions only with optional GR
+            }
+            elsif ( $type eq 'op3' ) {
+                error "Invalid operand \"$opr\"" unless ( 0 == $#opr );
+                gen_code3( $memoryp, $address, $INSTTBL{$inst}->{code},
+                    $opr[0], 0 );
+                $address++;
+
+                # instructions without operand
+            }
+            elsif ( $type eq 'op4' ) {
+                error "Invalid operand \"$opr\"" unless ( $#opr == -1 );
+                gen_code1( $memoryp, $address,
+                    ( $INSTTBL{$inst}->{code} << 8 ) );
+                $address++;
+
+                # instructions with (GR, adr, and optional XR), or (GR, GR)
+            }
+            elsif ( $type eq 'op5' ) {
+                error "Invalid operand \"$opr\""
+                  unless ( 1 <= $#opr and $#opr <= 2 );
+
+                $opr[2] = 0 unless defined( $opr[2] );
+
+                # register Literal
+                if ( $opr[1] =~ /=.+/ ) {
+                    my $ss = $opr[1];
+                    $ss =~ s/\\/\\\\/g;
+                    $ss =~ s/\+/\\\+/g;
+                    $ss =~ s/\*/\\\*/g;
+                    $ss =~ s/\?/\\\?/g;
+                    $ss =~ s/\./\\\./g;
+                    $ss =~ s/\(/\\\(/g;
+                    $ss =~ s/\)/\\\)/g;
+                    $ss =~ s/\[/\\\[/g;
+                    $ss =~ s/\]/\\\]/g;
+                    $ss =~ s/\{/\\\{/g;
+                    $ss =~ s/\}/\\\}/g;
+                    $ss =~ s/\|/\\\|/g;
+
+                    if ( grep( /=$ss$/, @literal_stack ) == () ) {
+                        push( @literal_stack, $opr[1] );
+                    }
+                    print STDERR "LITERAL: $opr[1]\n" if $DDEBUG;
+                }
+                elsif ($opr[1] !~ /^GR[0-7]$/
+                    && $opr[1] =~ /^[A-Z][a-zA-Z0-9]*/ )
+                {
+                    $opr[1] = $var_scope . "." . $opr[1];
+                }
+
+                # instructions with GR, GR.
+                if ( $opr[1] =~ /^GR[0-7]$/ ) {
+                    my $instcode = $INSTTBL{$inst}->{code} + 4;
+                    gen_code3( $memoryp, $address, $instcode,
+                        $opr[0], $opr[1] );
+                    $address++;
+                }
+                else {
+                    gen_code2( $memoryp, $address, $INSTTBL{$inst}->{code},
+                        $opr[0], $opr[1], $opr[2] );
+                    $address += 2;
+                }
+
+                # START instruction
+            }
+            elsif ( $type eq 'start' ) {
+                error "No label found at START" unless $label;
+
+                #$memoryp->{-1} = (@opr) ? $opr[0] : 0;
+
+                if ( $first_start == 1 ) {
+                    $first_start = 0;
+                    $memoryp->{-1} = (@opr) ? $label . "." . $opr[0] : 0;
+                }
+                else {
+                    $actual_label  = (@opr) ? $opr[0] : 0;
+                    $virtual_label = $label;
+                    print STDERR
+                      "Actual: $actual_label, Virtual: $virtual_label\n"
+                      if $DEBUG;
+                }
+                $var_scope = $label;
+                print STDERR "SCOPE: $var_scope\n" if $DEBUG;
+                add_label( $symtblp, $label, $address );
+
+                $in_block = 1;
+
+                # END instruction
+            }
+            elsif ( $type eq 'end' ) {
+                error "Can't use label \"$label\" at END" if $label;
+                error "Invalid operand \"$opr\"" unless ( $#opr == -1 );
+
+                # expand_literal;
+                while ( @literal_stack != () ) {
+                    my $lit = pop(@literal_stack);
+                    add_literal( $symtblp, $lit, $address );
+                    $lit =~ s/=//;
+                    if ( $lit =~ /^\'(.+)\'$/ ) {
+                        my $str = $1;
+                        $str =~ s/\'\'/\'/g;
+                        my @vals = unpack( 'C*', $str );
+                        for (@vals) {
+                            gen_code1( $memoryp, $address, $_ );
+                            $address++;
+                        }
+                    }
+                    elsif ( $lit =~ /^[+-]?\d+$|^\#[\da-fA-F]+$/ ) { # decial or
+                        hex gen_code1( $memoryp, $address, $lit );
+                        $address++;
+                    }
+                    else {
+                        error "Invalid literal: =$lit";
+                    }
+                }
+
+                $var_scope = "";
+                $in_block  = 0;
+
+                # DS instruction
+            }
+            elsif ( $type eq 'ds' ) {
+                error "Invalid operand \"$opr\"" unless ( 0 == $#opr );
+                check_decimal( $opr[0] );
+                for ( 1 .. $opr[0] ) {
+                    gen_code1( $memoryp, $address, 0 );
+                    $address++;
+                }
+
+                # DC instruction
+            }
+            elsif ( $type eq 'dc' ) {
+
+                #                if ($opr =~ /^\'(.+)\'$/) {
+                #                    my $str = $1;
+                #                    $str=~s/\'\'/\'/g;
+                #                    my @vals = unpack('C*', $str);
+                #                    for (@vals) {
+                #                        gen_code1($memoryp, $address, $_);
+                #                        $address++;
+                #                    }
+                # treatment for multiple numbers in DC
+                #} els
+                if ( $#opr >= 0 ) {    # number or label
+                    for ( 0 .. $#opr ) {
+                        if ( $opr[$_] =~ /^'(.+)'$/ ) {
+                            my $str = $1;
+                            $str =~ s/''/'/g;
+                            my @vals = unpack( 'C*', $str );
+                            for (@vals) {
+                                gen_code1( $memoryp, $address, $_ );
+                                $address++;
+                            }
+                        }
+                        elsif ( $opr[$_] =~ /^[A-Z][a-zA-Z\d]*$/ ) {
+                            $opr[$_] = $var_scope . "." . $opr[$_];
+                            gen_code1( $memoryp, $address, $opr[$_] );
+                            $address++;
+                        }
+                        else {
+                            gen_code1( $memoryp, $address, $opr[$_] );
+                            $address++;
+                        }
+                    }
+
+                    #                } elsif ($#opr == 0) {  # number or label
+                    #                    gen_code1($memoryp, $address, $opr[0]);
+                    #                    $address++;
+                }
+                else {
+                    error "Invalid operand \"$opr\"";
+                }
+
+                # IN/OUT macro
+            }
+            elsif ( ( $type eq 'in' ) or ( $type eq 'out' ) ) {
+                error "Invalid operand \"$opr\"" unless ( $#opr == 1 );
+
+                # two operands must be labels, not numbers
+                check_label( $opr[0] );
+                check_label( $opr[1] );
+
+                $opr[0] = $var_scope . "." . $opr[0];
+                $opr[1] = $var_scope . "." . $opr[1];
+
+                # IN/OUT macro is expanded to push two operands onto the
+                # stack, call SYS_IN / SYS_OUT, and restore stack.
+                my $entry = ( $type eq 'in' ) ? $SYS_IN : $SYS_OUT;
+                gen_code2( $memoryp, $address, $INSTTBL{PUSH}->{code}, 0, 0,
+                    1 );
+                gen_code2(
+                    $memoryp,
+                    $address + 2,
+                    $INSTTBL{PUSH}->{code},
+                    0, 0, 2
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 4,
+                    $INSTTBL{LAD}->{code},
+                    1, $opr[0], 0
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 6,
+                    $INSTTBL{LAD}->{code},
+                    2, $opr[1], 0
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 8,
+                    $INSTTBL{SVC}->{code},
+                    0, $entry, 0
+                );
+                gen_code3(
+                    $memoryp,
+                    $address + 10,
+                    $INSTTBL{POP}->{code},
+                    2, 0
+                );
+                gen_code3(
+                    $memoryp,
+                    $address + 11,
+                    $INSTTBL{POP}->{code},
+                    1, 0
+                );
+                $address += 12;
+
+                # RPUSH macro
+            }
+            elsif ( ( $type eq 'rpush' ) ) {
+                error "Invalid operand \"$opr\"" unless ( $#opr == -1 );
+                #
+                gen_code2( $memoryp, $address, $INSTTBL{PUSH}->{code}, 0, 0,
+                    1 );
+                gen_code2(
+                    $memoryp,
+                    $address + 2,
+                    $INSTTBL{PUSH}->{code},
+                    0, 0, 2
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 4,
+                    $INSTTBL{PUSH}->{code},
+                    0, 0, 3
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 6,
+                    $INSTTBL{PUSH}->{code},
+                    0, 0, 4
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 8,
+                    $INSTTBL{PUSH}->{code},
+                    0, 0, 5
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 10,
+                    $INSTTBL{PUSH}->{code},
+                    0, 0, 6
+                );
+                gen_code2(
+                    $memoryp,
+                    $address + 12,
+                    $INSTTBL{PUSH}->{code},
+                    0, 0, 7
+                );
+                $address += 14;
+
+                # RPOP macro
+            }
+            elsif ( ( $type eq 'rpop' ) ) {
+                error "Invalid operand \"$opr\"" unless ( $#opr == -1 );
+                #
+                gen_code3( $memoryp, $address, $INSTTBL{POP}->{code}, 7, 0 );
+                gen_code3( $memoryp, $address + 1, $INSTTBL{POP}->{code}, 6,
+                    0 );
+                gen_code3( $memoryp, $address + 2, $INSTTBL{POP}->{code}, 5,
+                    0 );
+                gen_code3( $memoryp, $address + 3, $INSTTBL{POP}->{code}, 4,
+                    0 );
+                gen_code3( $memoryp, $address + 4, $INSTTBL{POP}->{code}, 3,
+                    0 );
+                gen_code3( $memoryp, $address + 5, $INSTTBL{POP}->{code}, 2,
+                    0 );
+                gen_code3( $memoryp, $address + 6, $INSTTBL{POP}->{code}, 1,
+                    0 );
+                $address += 7;
+
+            }
+            else {
+                error "Instruction type \"$type\" is not implemented";
+            }
+        }
+    }
+    error "No \"END\" instruction found" if $in_block;
+}
+
+# Open the output file, and dump the assembled object code.
+sub pass2 {
+    my ( $file, $symtblp, $memoryp, $bufp ) = @_;
+    my $outfile;
+
+    $outfile = basename( $file, '.cas' );
+    $outfile .= '.com';
+    open( OUT, ">$outfile" ) || die "$outfile: $!\n";
+    binmode(OUT);    # for Windows
+
+    # print object header
+    printf OUT
+      pack( "a4nx10", 'CASL', expand_label( $symtblp, $memoryp->{-1} ) );
+
+    # dump memory image
+    print "CASL LISTING $file\n" if $::opt_a;
+    my $address;
+    my $last_line = -1;
+    for $address ( sort { $a <=> $b } keys %$memoryp ) {
+
+        # skip if start address
+        next if ( $address < 0 );
+
+        $__line = $memoryp->{$address}->{line};
+        my $val = expand_label( $symtblp, $memoryp->{$address}->{val} );
+        print OUT pack( 'n', $val );
+
+        my @aLine = split( /\t/, $$bufp[$__line] );
+        if ( $aLine[0] =~ /\.([A-Za-z\d]+)$/ ) {
+            $aLine[0] = $1;
+        }
+        my $bufline = join( "\t", @aLine );
+
+        if ($::opt_a) {
+            if ( $__line != $last_line ) {
+                printf "%4d %04x %04x", $__line, $address, $val;
+
+                #                print "\t$$bufp[$__line]\n";
+                print "\t$bufline\n";
+                $last_line = $__line;
+            }
+            else {
+                printf "%4d      %04x", $__line, $val;
+                print "\n";
+            }
+        }
+    }
+
+    # list all symbols
+    if ($::opt_a) {
+        print "\nDEFINED SYMBOLS\n";
+        my %where;
+        for ( sort keys %$symtblp ) {
+            $where{ $symtblp->{$_}->{line} } = $_;
+        }
+        for ( sort { $a <=> $b } keys %where ) {
+            my $label = $where{$_};
+
+            $label =~ /^([A-Za-z\d]+)\.([A-Za-z\d]+)$/;
+            my $label_view;
+            if ( $1 eq $2 ) {
+                $label_view = "$2";
+            }
+            else {
+                $label_view = "$2 ($1)";
+            }
+
+            printf(
+                "\t%s:%d:\t%04x\t%s\n",
+                $symtblp->{$label}->{file},
+                $symtblp->{$label}->{line},
+                expand_label( $symtblp, $label ), $label_view
+            );
+        }
+    }
+
+    close(OUT);
+}
+
+getopts('av') || usage;
+
+if ($::opt_v) {
+    print "This is CASL II, version $VERSION.\n";
+    print "Copyright (c) 2001-2008, Osamu Mizuno.\n";
+    print "All rights reserved.\n";
+    exit 0;
+}
+
+@ARGV || usage;
+
+my $file;
+my %memory;
+my %symtbl;
+my @buf;
+
+$file   = $ARGV[0];
+$__file = $file;
+pass1( $file, \%symtbl, \%memory, \@buf );
+pass2( $file, \%symtbl, \%memory, \@buf );
+
+exit 0;
+
+__END__
+
+=head1 NAME
+
+casl2 - A simple implementation of CASL II assembler in Perl
+
+=head1 SYNOPSIS
+
+casl2 [-av] file
+
+=head1 DESCRIPTION
+
+This manual page documents B<casl2>, a simple implementation of CASL II
+assembler written in Perl.  B<casl2> parses a CASL II assembler code given
+by I<file>, and generates object code for COMET II, which is a virtual
+computer designed for use in a qualifying examination called as Japan
+Information-Technology Engineers Examination.  The generated object
+code can be executed with, B<comet2>, a COMET II simulator.
+
+All basic instructions of the COMET II described in the COMET II
+specification document are supported. Pseudo instructions (START, END,
+DS, and DC) and macros (IN, OUT, RPUSH, and RPOP) are also supported.
+See the specification document for detailed syntax of the CASL II
+assembler language.  The specification document should be obtained
+from a legally incorporated organization: Japan Information-Technology
+Engineers Examination Center (JITEC), 1-16-4, Toranomon, Tokyo, 106,
+Japan, +81-3-3591-0421, http://www.jitec.jipdec.or.jp/.
+
+B<casl2> repeatedly assembles all source files specified as I<file>.
+Each source file should have the extension of C<.cas> in its file name
+so that the object code goes to a file of the same name with replacing
+C<.cas> with C<.com>.  For example, B<casl2> assembles F<foo.cas> and
+generated object code will be written in F<foo.com>.
+
+=head1 OPTIONS
+
+=over 4
+
+=item C<-a>
+
+If this option is specified, when assemblage of a source code is
+finished, B<casl2> displays all generated object code and defined
+symbols with their values to the standard output.
+
+=item C<-v>
+
+This option forces B<casl2> to exit after showing its version number
+and copyright notice.
+
+=back
+
+=head1 RESTRICTIONS
+
+The syntax of the CASL II assembler is defined in the specification
+document but it is somewhat obscure.  B<casl2> accepts all syntax
+allowed in the specification document, and rejects all explicitly
+prohibited syntax as well.  However, there still remains
+not-well-defined part in the specification document.  The followings
+might cause inconvenience to users, but these are, at least in the
+current version of B<casl2>, features and not bugs.
+
+=head1 SEE ALSO
+
+comet2(1)
+
+=head1 AUTHOR
+Hiroyuki Ohsaki <oosaki@ist.osaka-u.ac.jp>
+Osamu Mizuno <o-mizuno@kit.ac.jp>
+
+=cut

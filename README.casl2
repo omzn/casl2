@@ -1,0 +1,79 @@
+NAME
+    casl2 - Simple implementation of CASL II assembler in Perl
+    comet2 - Simple implementation of COMET II simulator in Perl
+
+What is casl2?
+
+    casl2 is simple implementation of CASL II assembler and COMET II
+    simulator written in Perl. The CASL II assembler and the COMET II
+    simulator are designed for users to study principle operations of
+    computers. In particular, CASL II and COMET II are used in a
+    qualifying examination called as Japan Information-Technology
+    Engineers Examination so that these programs would be of value for
+    people who would like to acquire this qualification.
+
+    Since both the CASL II assembler and the COMET II simulator are
+    written only in Perl version 5, these should work on almost all
+    operating system including UNIX flavors, MS-DOS, Windows, and
+    Macintosh.
+
+    casl2 includes the following programs:
+
+    casl2 - A simple implementation of CASL II assembler in Perl
+    comet2 - A simple implementation of COMET II simulator in Perl
+
+Availability
+    The latest version of casl2 can be found at the following location.
+
+    http://se.is.kit.ac.jp/~o-mizuno/
+
+Copyright
+    Copyright (C) 1998-2000 Hiroyuki Ohsaki (oosaki@ist.osaka-u.ac.jp)
+
+    This program is free software; you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation; either version 2 of the License, or (at your
+    option) any later version.
+
+    This program is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+    Public License for more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program; if not, write to the Free Software Foundation, Inc.,
+    675 Mass Ave, Cambridge, MA 02139, USA.
+
+System Requirements
+    To use this program, you only need:
+
+    - Perl version 5.002 or later
+    The latest version of Perl can be obtained from various GNU archives
+    around the world (e.g., from ftp://prep.ai.mit.edu/pub/gnu/).
+
+    Unfortunately, casl2 does not work with Perl version 4 since it uses
+    various features appeared in version 5 such as object-oriented
+    programming feature. casl uses several Perl libraries (e.g.,
+    Getopt/Std.pm and File/Basename.pm), which come with the Perl
+    distribution and are installed by default. Make sure Perl in you system
+    is installed correctly. Typically, these libraries reside in
+    /usr/lib/perl5.
+
+Installation
+    casl2/comet2 uses standard Perl's MakeMaker module. Thus, just
+    type the following commands.
+
+      perl Makefile.PL
+      make 
+      make install
+
+Feedback
+    If you find any bugs, first check if a newer version exists. If not,
+    please mail bug report or fixing patch to me. I appreciate your comments
+    and/or suggestions.
+
+References
+    casl2(1), comet2(1)
+
+Author
+    Osamu Mizuno (o-mizuno at se.is.kit.ac.jp)

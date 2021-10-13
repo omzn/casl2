@@ -1,0 +1,1129 @@
+#!/usr/bin/perl
+#
+# A simple implementation of COMET emulator.
+# Copyright (c) 1997-2000, Hiroyuki Ohsaki.
+# All rights reserved.
+#
+# $Id: comet2,v 1.15 2008/09/11 17:28:28 o-mizuno Exp $
+#
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+# A simple implementation of COMET II emulator.
+# Extended by Osamu Mizuno for COMET II compatibility (2001-2008).
+
+use Getopt::Std;
+use File::Basename;
+use strict;
+use integer;
+
+# Disable buffering of STDOUT.
+$| = 1;
+
+# Each entry is a object code, and its associated value is a hash
+# having two keys: ID is the mnemonic of the instruction, and TYPE is
+# the type of it.
+
+my %INSTTBL = (    # COMET instructions
+    '0x00' => { id => 'NOP',  type => 'op4' },
+    '0x10' => { id => 'LD',   type => 'op1' },
+    '0x11' => { id => 'ST',   type => 'op1' },
+    '0x12' => { id => 'LAD',  type => 'op1' },
+    '0x14' => { id => 'LD',   type => 'op5' },
+    '0x20' => { id => 'ADDA', type => 'op1' },
+    '0x21' => { id => 'SUBA', type => 'op1' },
+    '0x22' => { id => 'ADDL', type => 'op1' },
+    '0x23' => { id => 'SUBL', type => 'op1' },
+    '0x24' => { id => 'ADDA', type => 'op5' },
+    '0x25' => { id => 'SUBA', type => 'op5' },
+    '0x26' => { id => 'ADDL', type => 'op5' },
+    '0x27' => { id => 'SUBL', type => 'op5' },
+    '0x30' => { id => 'AND',  type => 'op1' },
+    '0x31' => { id => 'OR',   type => 'op1' },
+    '0x32' => { id => 'XOR',  type => 'op1' },
+    '0x34' => { id => 'AND',  type => 'op5' },
+    '0x35' => { id => 'OR',   type => 'op5' },
+    '0x36' => { id => 'XOR',  type => 'op5' },
+    '0x40' => { id => 'CPA',  type => 'op1' },
+    '0x41' => { id => 'CPL',  type => 'op1' },
+    '0x44' => { id => 'CPA',  type => 'op5' },
+    '0x45' => { id => 'CPL',  type => 'op5' },
+    '0x50' => { id => 'SLA',  type => 'op1' },
+    '0x51' => { id => 'SRA',  type => 'op1' },
+    '0x52' => { id => 'SLL',  type => 'op1' },
+    '0x53' => { id => 'SRL',  type => 'op1' },
+    '0x61' => { id => 'JMI',  type => 'op2' },
+    '0x62' => { id => 'JNZ',  type => 'op2' },
+    '0x63' => { id => 'JZE',  type => 'op2' },
+    '0x64' => { id => 'JUMP', type => 'op2' },
+    '0x65' => { id => 'JPL',  type => 'op2' },
+    '0x66' => { id => 'JOV',  type => 'op2' },
+    '0x70' => { id => 'PUSH', type => 'op2' },
+    '0x71' => { id => 'POP',  type => 'op3' },
+    '0x80' => { id => 'CALL', type => 'op2' },
+    '0x81' => { id => 'RET',  type => 'op4' },
+    '0xf0' => { id => 'SVC',  type => 'op2' },
+);
+
+# addresses of IN/OUT/EXI system calls
+my $SYS_IN  = 0xfff0;
+my $SYS_OUT = 0xfff2;
+
+# values of the flag register
+my $FR_PLUS  = 0;
+my $FR_ZERO  = 1;
+my $FR_MINUS = 2;
+my $FR_OVER  = 4;
+
+# the top of the stack, which is the upper limit of the stack space.
+my $STACK_TOP = 0xff00;
+
+# indices for the state list, @state
+my $PC  = 0;
+my $FR  = 1;
+my $GR0 = 2;
+my $GR1 = 3;
+my $GR2 = 4;
+my $GR3 = 5;
+my $GR4 = 6;
+my $GR5 = 7;
+my $GR6 = 8;
+my $GR7 = 9;
+my $SP  = 10;
+my $BP  = 11;
+
+# maximum/minimum of signed value
+my $MAX_SIGNED = 32767;
+my $MIN_SIGNED = -32768;
+
+my %CMDTBL = (
+    'r|run'     => { subr => \&cmd_run,    list => 1 },
+    's|step'    => { subr => \&cmd_step,   list => 1 },
+    'b|break'   => { subr => \&cmd_break,  list => 0 },
+    'd|delete'  => { subr => \&cmd_delete, list => 0 },
+    'i|info'    => { subr => \&cmd_info,   list => 0 },
+    'p|print'   => { subr => \&cmd_print,  list => 0 },
+    'du|dump'   => { subr => \&cmd_dump,   list => 0 },
+    'st|stack'  => { subr => \&cmd_stack,  list => 0 },
+    'f|file'    => { subr => \&cmd_file,   list => 1 },
+    'j|jump'    => { subr => \&cmd_jump,   list => 1 },
+    'm|memory'  => { subr => \&cmd_memory, list => 1 },
+    'di|disasm' => { subr => \&cmd_disasm, list => 0 },
+    'h|help'    => { subr => \&cmd_help,   list => 0 },
+);
+
+my $VERSION = '1.1.0 (11 Sep 2008)';
+my $DEBUG   = 0;
+
+sub usage {
+    my $prog = basename($0);
+
+    die <<EOF;
+usage: $prog [-qQ <file>] [file]
+  where
+   -q : Quiet mode. Information except prompts for IN/OUT macro are hidden.
+   -Q : More quiet mode. Only outputs of user program are displayed. 
+  when using -q or -Q, file (.com object) must be specified.
+EOF
+}
+
+sub signed {
+    my $val = shift;
+
+    return unpack( 's', pack( 'S', $val ) );
+}
+
+sub unsigned {
+    my $val = shift;
+
+    return unpack( 'S', pack( 's', $val ) );
+}
+
+sub check_number {
+    my $val = shift;
+
+    if (
+        defined($val)
+        and ( ( $val =~ /^[-+]?\d+$/ )
+            or $val =~ /^\#[\da-zA-Z]+$/ )
+      )
+    {
+        return 1;
+    }
+    else {
+        return undef;
+    }
+}
+
+sub expand_number {
+    my $val = shift;
+
+    if ( check_number($val) ) {
+        if ( $val =~ /^\#(.*)$/ ) {
+            eval qq(\$val = 0x$1;);    # convert hex to decimal
+        }
+        $val &= 0xffff;                # truncate to 16 bits
+        return $val;
+    }
+    else {
+        return undef;
+    }
+}
+
+sub get_flag {
+    my $val = shift;
+
+    if ( $val & 0x8000 ) {
+        return $FR_MINUS;
+    }
+    elsif ( $val == 0 ) {
+        return $FR_ZERO;
+    }
+    else {
+        return $FR_PLUS;
+    }
+}
+
+sub mem_get {
+    my ( $memoryp, $pc ) = @_;
+
+    if ( defined $$memoryp[$pc] ) {
+        return $$memoryp[$pc];
+    }
+    else {
+        return 0;
+    }
+}
+
+sub mem_put {
+    my ( $memoryp, $pc, $val ) = @_;
+
+    $$memoryp[$pc] = $val;
+}
+
+# Disassemble the object from the PC, and return strings for
+# the instruction and the operand.
+sub parse {
+    my ( $memoryp, $statep ) = @_;
+    print STDERR "parse($memoryp, $statep)\n" if $DEBUG;
+
+    my $pc   = $$statep[$PC];
+    my $inst = mem_get( $memoryp, $pc ) >> 8;
+    my $gr   = ( mem_get( $memoryp, $pc ) >> 4 ) & 0xf;
+    my $xr   = mem_get( $memoryp, $pc ) & 0xf;
+    my $adr  = mem_get( $memoryp, $pc + 1 );
+
+    my $inst_sym = 'DC';
+    my $opr_sym  = sprintf '#%04x', mem_get( $memoryp, $pc );
+    my $size     = 1;
+    my $key      = sprintf( '0x%02x', $inst );
+
+    if ( defined $INSTTBL{$key} ) {
+        $inst_sym = $INSTTBL{$key}->{id};
+
+        my $type = $INSTTBL{$key}->{type};
+
+        # instructions with GR, adr, and XR
+        if ( $type eq 'op1' ) {
+            $opr_sym = sprintf 'GR%d, #%04x', $gr, $adr, $xr;
+            $opr_sym .= sprintf ', GR%d', $xr if ( $xr > 0 );
+            $size = 2;
+
+            # instructions with adr and XR
+        }
+        elsif ( $type eq 'op2' ) {    # with adr, (XR)
+            $opr_sym = sprintf '#%04x', $adr;
+            $opr_sym .= sprintf ', GR%d', $xr if ( $xr > 0 );
+            $size = 2;
+
+            # instructions with GR
+        }
+        elsif ( $type eq 'op3' ) {    # only with GR
+            $opr_sym = sprintf 'GR%d', $gr;
+            $size    = 1;
+
+            # instructions without operand
+        }
+        elsif ( $type eq 'op4' ) {    # no operand
+            $opr_sym = '';
+            $size    = 1;
+
+            # instructions with GR and GR
+        }
+        elsif ( $type eq 'op5' ) {    # with GR, GR
+            $opr_sym = sprintf 'GR%d, GR%d', $gr, $xr;
+            $size    = 1;
+        }
+    }
+
+    return ( $inst_sym, $opr_sym, $size );
+}
+
+# Handler of the IN system call --- extract two arguments from the
+# stack, read a line from STDIN, store it in specified place.
+sub exec_in {
+    my ( $memoryp, $statep ) = @_;
+    print STDERR "exec_in($memoryp, $statep)\n" if $DEBUG;
+
+    my @regs = @$statep[ $GR0 .. $GR7 ];
+    my $lenp = $regs[2];
+    my $bufp = $regs[1];
+
+    print STDERR "LENP: $lenp , BUFP: $bufp \n" if $DEBUG;
+
+    print 'IN > ' if !$::opt_Q;    # prompt for input
+    $_ = <STDIN>;
+    chomp $_;
+    $_ = substr( $_, 0, 256 )      # must be shorter than 256 characters
+      if ( length($_) > 256 );
+    mem_put( $memoryp, $lenp, length($_) );
+    for ( unpack( 'C*', $_ ) ) {
+        mem_put( $memoryp, $bufp++, $_ );
+    }
+
+}
+
+# Handler of the OUT system call --- extract two arguments from the
+# stack, write a string to STDOUT.
+sub exec_out {
+    my ( $memoryp, $statep ) = @_;
+    print STDERR "exec_out($memoryp, $statep)\n" if $DEBUG;
+
+    my @regs = @$statep[ $GR0 .. $GR7 ];
+    my $lenp = $regs[2];
+    my $bufp = $regs[1];
+    my $len  = mem_get( $memoryp, $lenp );
+
+    print 'OUT> ' if !$::opt_Q;
+    for ( 1 .. $len ) {
+        printf '%c', ( mem_get( $memoryp, $bufp + ( $_ - 1 ) ) & 0xff );
+    }
+    print "\n";
+
+}
+
+# Execute one instruction from the PC --- evaluate the intruction,
+# update registers, and advance the PC by the instruction's size.
+sub step_exec {
+    my ( $memoryp, $statep ) = @_;
+    print STDERR "step_exec($memoryp, $statep)\n" if $DEBUG;
+
+    # obtain the mnemonic and the operand for the current address
+    my ( $inst, $opr ) = parse( $memoryp, $statep );
+
+    my $pc   = $$statep[$PC];
+    my $fr   = $$statep[$FR];
+    my $sp   = $$statep[$SP];
+    my @regs = @$statep[ $GR0 .. $GR7 ];
+
+    my $gr   = ( mem_get( $memoryp, $pc ) >> 4 ) & 0xf;
+    my $xr   = mem_get( $memoryp, $pc ) & 0xf;
+    my $adr  = mem_get( $memoryp, $pc + 1 );
+    my $eadr = $adr;
+    $eadr += $regs[$xr] if ( 1 <= $xr and $xr <= 7 );
+    $eadr &= 0xffff;
+
+    if ( $inst eq 'LD' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] = mem_get( $memoryp, $eadr );
+            $fr = get_flag( $regs[$gr] );
+            $pc += 2;
+        }
+        else {
+            $regs[$gr] = $regs[$xr];
+            $fr = get_flag( $regs[$gr] );
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'ST' ) {
+        mem_put( $memoryp, $eadr, $regs[$gr] );
+        $pc += 2;
+
+    }
+    elsif ( $inst eq 'LAD' ) {
+        $regs[$gr] = $eadr;
+        $pc += 2;
+
+    }
+    elsif ( $inst eq 'ADDA' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] = signed( $regs[$gr] );
+            $regs[$gr] += mem_get( $memoryp, $eadr );
+            my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 2;
+
+        }
+        else {
+            $regs[$gr] = signed( $regs[$gr] );
+            $regs[$xr] = signed( $regs[$xr] );
+            $regs[$gr] += $regs[$xr];
+            my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $regs[$xr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'SUBA' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] = signed( $regs[$gr] );
+            $regs[$gr] -= mem_get( $memoryp, $eadr );
+            my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 2;
+
+        }
+        else {
+            $regs[$gr] = signed( $regs[$gr] );
+            $regs[$xr] = signed( $regs[$xr] );
+            $regs[$gr] -= $regs[$xr];
+            my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $regs[$xr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'ADDL' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] += mem_get( $memoryp, $eadr );
+            my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 2;
+
+        }
+        else {
+            $regs[$gr] += $regs[$xr];
+            my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'SUBL' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] -= mem_get( $memoryp, $eadr );
+            my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 2;
+        }
+        else {
+            $regs[$gr] -= $regs[$xr];
+            my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'AND' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] &= mem_get( $memoryp, $eadr );
+            $fr = get_flag( $regs[$gr] );
+            $pc += 2;
+
+        }
+        else {
+            $regs[$gr] &= $regs[$xr];
+            $fr = get_flag( $regs[$gr] );
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'OR' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] |= mem_get( $memoryp, $eadr );
+            $fr = get_flag( $regs[$gr] );
+            $pc += 2;
+
+        }
+        else {
+            $regs[$gr] |= $regs[$xr];
+            $fr = get_flag( $regs[$gr] );
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'XOR' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] ^= mem_get( $memoryp, $eadr );
+            $fr = get_flag( $regs[$gr] );
+            $pc += 2;
+
+        }
+        else {
+            $regs[$gr] ^= $regs[$xr];
+            $fr = get_flag( $regs[$gr] );
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'CPA' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $_  = signed( $regs[$gr] ) - signed( mem_get( $memoryp, $eadr ) );
+            $_  = $MAX_SIGNED if ( $_ > $MAX_SIGNED );
+            $_  = $MIN_SIGNED if ( $_ < $MIN_SIGNED );
+            $fr = get_flag( unsigned($_) );
+            $pc += 2;
+
+        }
+        else {
+            $_  = signed( $regs[$gr] ) - signed( $regs[$xr] );
+            $_  = $MAX_SIGNED if ( $_ > $MAX_SIGNED );
+            $_  = $MIN_SIGNED if ( $_ < $MIN_SIGNED );
+            $fr = get_flag( unsigned($_) );
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'CPL' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $_  = $regs[$gr] - mem_get( $memoryp, $eadr );
+            $_  = $MAX_SIGNED if ( $_ > $MAX_SIGNED );
+            $_  = $MIN_SIGNED if ( $_ < $MIN_SIGNED );
+            $fr = get_flag( unsigned($_) );
+            $pc += 2;
+        }
+        else {
+            $_  = $regs[$gr] - $regs[$xr];
+            $_  = $MAX_SIGNED if ( $_ > $MAX_SIGNED );
+            $_  = $MIN_SIGNED if ( $_ < $MIN_SIGNED );
+            $fr = get_flag( unsigned($_) );
+            $pc += 1;
+        }
+
+    }
+    elsif ( $inst eq 'SLA' ) {
+        $_ = $regs[$gr] & 0x8000;
+        $regs[$gr] <<= $eadr;
+        my $ofr = $regs[$gr] & 0x8000;
+        $ofr >>= 13;
+        $regs[$gr] |= $_;
+        $regs[$gr] &= 0xffff;
+        $fr = get_flag( $regs[$gr] ) | $ofr;
+        $pc += 2;
+
+    }
+    elsif ( $inst eq 'SRA' ) {
+        $_ = $regs[$gr];
+        my $ofr = $regs[$gr] & ( 0x0001 << ( $eadr - 1 ) );
+        $ofr <<= ( 2 - ( $eadr - 1 ) );
+        if ( $_ & 0x8000 ) {
+            $_ &= 0x7fff;
+            $_ >>= $eadr;
+            $_ += ( ( 0x7fff >> $eadr ) ^ 0xffff );
+        }
+        else {
+            $_ >>= $eadr;
+        }
+        $regs[$gr] = $_;
+        $fr = get_flag( $regs[$gr] ) | $ofr;
+        $pc += 2;
+
+    }
+    elsif ( $inst eq 'SLL' ) {
+        $regs[$gr] <<= $eadr;
+        my $ofr = $regs[$gr] & 0x10000;
+        $ofr >>= 14;
+        $regs[$gr] &= 0xffff;
+        $fr = get_flag( $regs[$gr] ) | $ofr;
+        $pc += 2;
+
+    }
+    elsif ( $inst eq 'SRL' ) {
+        my $ofr = $regs[$gr] & ( 0x0001 << ( $eadr - 1 ) );
+        $ofr <<= 2 - ( $eadr - 1 );
+        $regs[$gr] >>= $eadr;
+        $fr = get_flag( $regs[$gr] ) | $ofr;
+        $pc += 2;
+
+        #    } elsif ($inst eq 'JPZ') {
+        #	$pc = ($fr != $FR_MINUS) ? $eadr : ($pc + 2);
+
+    }
+    elsif ( $inst eq 'JMI' ) {
+        $pc = ( ( $fr & $FR_MINUS ) == $FR_MINUS ) ? $eadr : ( $pc + 2 );
+
+    }
+    elsif ( $inst eq 'JNZ' ) {
+        $pc = ( ( $fr & $FR_ZERO ) != $FR_ZERO ) ? $eadr : ( $pc + 2 );
+
+    }
+    elsif ( $inst eq 'JZE' ) {
+        $pc = ( ( $fr & $FR_ZERO ) == $FR_ZERO ) ? $eadr : ( $pc + 2 );
+
+    }
+    elsif ( $inst eq 'JUMP' ) {
+        $pc = $eadr;
+
+    }
+    elsif ( $inst eq 'JPL' ) {
+        $pc = (  ( ( $fr & $FR_MINUS ) != $FR_MINUS )
+              && ( ( $fr & $FR_ZERO ) != $FR_ZERO ) ) ? $eadr : ( $pc + 2 );
+
+    }
+    elsif ( $inst eq 'JOV' ) {
+        $pc = ( ( $fr & $FR_OVER ) != 0 ) ? $eadr : ( $pc + 2 );
+
+    }
+    elsif ( $inst eq 'PUSH' ) {
+        $sp--;
+        mem_put( $memoryp, $sp, $eadr );
+        $pc += 2;
+
+    }
+    elsif ( $inst eq 'POP' ) {
+        $regs[$gr] = mem_get( $memoryp, $sp );
+        $sp++;
+        $pc += 1;
+
+    }
+    elsif ( $inst eq 'CALL' ) {
+        $sp--;
+        mem_put( $memoryp, $sp, $pc + 2 );
+        $pc = $eadr;
+
+    }
+    elsif ( $inst eq 'RET' ) {
+        $pc = mem_get( $memoryp, $sp );
+        $sp++;
+        if ( $sp > $STACK_TOP ) {    # RET on main routine
+            exit 1;
+        }
+
+    }
+    elsif ( $inst eq 'SVC' ) {
+        if ( $eadr == $SYS_IN ) {
+            exec_in( $memoryp, $statep );
+        }
+        elsif ( $eadr == $SYS_OUT ) {
+            exec_out( $memoryp, $statep );
+        }
+        $pc += 2;
+
+    }
+    elsif ( $inst eq 'NOP' ) {
+        $pc++;
+
+    }
+    else {
+        die sprintf( "Illegal instruction $inst at \#%04x.\n", $pc );
+    }
+
+    # update registers
+    $$statep[$PC]            = $pc;
+    $$statep[$FR]            = $fr;
+    $$statep[$SP]            = $sp;
+    @$statep[ $GR0 .. $GR7 ] = @regs;
+}
+
+sub cmd_run {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_run($memoryp, $statep, @args)\n" if $DEBUG;
+
+    while (1) {
+        step_exec( $memoryp, $statep );
+
+        # check the PC is at one of breakpoints
+        for ( 0 .. $#{ $$statep[$BP] } ) {
+            my $pnt = ${ $$statep[$BP] }[$_];
+            if ( $pnt == $$statep[$PC] ) {
+                printf "Breakpoint $_, \#%04x\n", $pnt;
+                return;
+            }
+        }
+    }
+}
+
+sub cmd_step {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_step($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $count = expand_number( $args[0] );
+    $count = 1 unless ( defined $count );
+    for ( 1 .. $count ) {
+        step_exec( $memoryp, $statep );
+    }
+}
+
+sub cmd_break {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_break($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $val = expand_number( $args[0] );
+    if ( defined $val ) {
+        push( @{ $$statep[$BP] }, $val );
+    }
+    else {
+        warn "Invalid argument.\n";
+    }
+}
+
+sub cmd_delete {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_delete($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $val = expand_number( $args[0] );
+    if ( defined $val ) {
+        splice( @{ $$statep[$BP] }, $val, 1 );
+    }
+    else {
+        print 'Delete all breakpoints? (y or n) ';
+        $_ = <STDIN>;
+        chomp;
+        if ( ( $_ eq 'y' ) or ( $_ eq 'Y' ) ) {
+            @{ $$statep[$BP] } = ();
+        }
+    }
+}
+
+sub cmd_info {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_info($memoryp, $statep, @args)\n" if $DEBUG;
+
+    for ( 0 .. $#{ $$statep[$BP] } ) {
+        printf "%2d: #%04x\n", $_, ${ $$statep[$BP] }[$_];
+    }
+}
+
+sub cmd_print {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_stat($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $pc   = $$statep[$PC];
+    my $fr   = $$statep[$FR];
+    my $sp   = $$statep[$SP];
+    my @regs = @$statep[ $GR0 .. $GR7 ];
+
+    # obtain instruction and operand at current PC
+    my ( $inst, $opr ) = parse( $memoryp, $statep );
+
+    print "\n";
+    printf "PR  \#%04x [ %-8s %-15s ]\n", $pc, $inst, $opr;
+    printf "SP  \#%04x(%6d)  ", $sp, signed($sp);
+    printf "FR  %s  (%6d)\n",
+      substr( unpack( 'B*', pack( 'N', $fr ) ), -3 ), $fr;
+    printf "GR%d \#%04x(%6d)  ", 0, $regs[0], signed( $regs[0] );
+    printf "GR%d \#%04x(%6d)  ", 1, $regs[1], signed( $regs[1] );
+    printf "GR%d \#%04x(%6d)  ", 2, $regs[2], signed( $regs[2] );
+    printf "GR%d \#%04x(%6d)\n", 3, $regs[3], signed( $regs[3] );
+    printf "GR%d \#%04x(%6d)  ", 4, $regs[4], signed( $regs[4] );
+    printf "GR%d \#%04x(%6d)  ", 5, $regs[5], signed( $regs[5] );
+    printf "GR%d \#%04x(%6d)  ", 6, $regs[6], signed( $regs[6] );
+    printf "GR%d \#%04x(%6d)\n", 7, $regs[7], signed( $regs[7] );
+}
+
+sub cmd_dump {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_dump($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $val = expand_number( $args[0] );
+    $val = $$statep[$PC] unless ( defined $val );
+
+    my ( $row, $col, $base );
+    for $row ( 0 .. 15 ) {
+        $base = $val + ( $row << 3 );
+        printf '%04x:', $base;
+        for $col ( 0 .. 7 ) {
+            printf ' %04x', mem_get( $memoryp, $base + $col );
+        }
+        print ' ';
+        for $col ( 0 .. 7 ) {
+            $_ = mem_get( $memoryp, $base + $col ) & 0xff;
+            printf '%c', ( ( $_ >= 0x20 and $_ <= 0x7f ) ? $_ : ord('.') );
+        }
+        print "\n";
+    }
+}
+
+sub cmd_stack {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_stack($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $val = $$statep[$SP];
+    cmd_dump( $memoryp, $statep, $val );
+}
+
+sub cmd_file {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_file($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $val = $args[0];
+    if ( defined $val ) {
+        open( IN, $val ) || die "$val: $!\n";
+        print "Reading object from $val..." if !( $::opt_q || $::opt_Q );
+        binmode(IN);    # for Windows
+
+        # check file type
+        $_ = '';
+        read( IN, $_, 16 );
+        my ( $id, $start ) = unpack( 'a4n', $_ );
+        die "$val: Not a COMET II object file\n" unless ( $id eq 'CASL' );
+
+        # read into %$memoryp
+        my $pc = 0;
+        @$memoryp = ();    # clear memory
+        while ( !eof(IN) ) {
+            read( IN, $_, 2 ) || die "read: $!\n";
+            $$memoryp[ $pc++ ] = unpack( 'n', $_ );
+            die "Out of memory\n" if ( $pc > $STACK_TOP );
+        }
+        close(IN);
+
+        $$statep[$PC] = $start;
+        print "done.\n" if !( $::opt_q || $::opt_Q );
+    }
+    else {
+        warn "Invalid argument \"$val\".\n";
+    }
+}
+
+sub cmd_jump {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_jump($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $val = expand_number( $args[0] );
+    if ( defined $val ) {
+        $$statep[$PC] = expand_number($val);
+    }
+    else {
+        warn "Invalid argument.\n";
+    }
+}
+
+sub cmd_memory {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_memory($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $adr = expand_number( $args[0] );
+    my $val = expand_number( $args[1] );
+    if ( defined($adr) and defined($val) ) {
+        mem_put( $memoryp, $adr, $val );
+    }
+    else {
+        warn "Invalid argument.\n";
+    }
+}
+
+sub cmd_disasm {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_disasm($memoryp, $statep, @args)\n" if $DEBUG;
+
+    my $val = expand_number( $args[0] );
+    $val = $$statep[$PC] unless ( defined $val );
+
+    my $pc = $$statep[$PC];    # save original PC
+    $$statep[$PC] = $val;
+
+    for ( 0 .. 15 ) {
+        my ( $inst, $opr, $size ) = parse( $memoryp, $statep );
+        printf "\#%04x\t%-s\t%-s\n", $$statep[$PC], $inst, $opr;
+        $$statep[$PC] += $size;
+    }
+
+    $$statep[$PC] = $pc;       # restore PC
+}
+
+sub cmd_help {
+    my ( $memoryp, $statep, @args ) = @_;
+    print STDERR "cmd_help($memoryp, $statep, @args)\n" if $DEBUG;
+
+    print <<EOF;
+List of commands:
+
+r,  run		Start execution of program.
+s,  step	Step execution.  Argument N means do this N times.
+b,  break	Set a breakpoint at specified address.
+d,  delete	Delete some breakpoints.
+i,  info        Print information on breakpoints.
+p,  print	Print status of PC/FR/SP/GR0..GR7 registers.
+du, dump	Dump 128 words of memory image from specified address.
+st, stack	Dump 128 words of stack image.
+f,  file	Use FILE as program to be debugged.
+j,  jump	Continue program at specifed address.
+m,  memory	Change the memory at ADDRESS to VALUE.
+di, disasm      Disassemble 32 words from specified address.
+h,  help	Print list of commands.
+q,  quit	Exit comet.
+EOF
+
+}
+
+getopts("qQv") || usage;
+
+if ( !( $::opt_q || $::opt_Q ) ) {
+    print "This is COMET II, version $VERSION.\n";
+    print "Copyright (c) 2001-2008, Osamu Mizuno.\n";
+    print "All rights reserved.\n";
+    exit 0 if ($::opt_v);
+}
+
+# memory image
+my @memory = ();
+
+# PC, FR, GR0, GR1, GR2, GR3, GR4, GR5, GR6, GR7, SP, break points
+my @state = ( 0x0000, $FR_ZERO, 0, 0, 0, 0, 0, 0, 0, 0, $STACK_TOP, () );
+
+if ( @ARGV == 0 && ( $::opt_Q || $::opt_q ) ) {
+    print "You have to specify .com file when using -q or -Q.\n";
+    exit 0;
+}
+
+if ( @ARGV > 0 ) {
+    cmd_file( \@memory, \@state, $ARGV[0] );
+}
+
+my $last_cmd = '';
+cmd_print( \@memory, \@state ) if !( $::opt_q || $::opt_Q );
+cmd_run( \@memory, \@state )   if $::opt_q || $::opt_Q;
+
+while (1) {
+
+    # show prompt and input command from STDIN
+    print "comet> ";
+    $_ = <STDIN>;
+    chomp;
+    if ( $_ eq '' ) {
+        $_ = $last_cmd if ( $_ eq '' );
+    }
+    else {
+        $last_cmd = $_;
+    }
+    my ( $cmd, @args ) = split( /\s+/, $_ );
+
+    next unless $cmd;
+    last if ( $cmd =~ /^(q|quit)$/ );
+
+    # execute command according to command.
+    my $found = 0;
+    for ( keys %CMDTBL ) {
+        if ( $cmd =~ m/^($_)$/ ) {
+            &{ $CMDTBL{$_}->{subr} }( \@memory, \@state, @args );
+            cmd_print( \@memory, \@state, @args )
+              if $CMDTBL{$_}->{list} && !( $::opt_q || $::opt_Q );
+            $found = 1;
+            last;
+        }
+    }
+    print "Undefined command: \"$cmd\". Try \"help\".\n"
+      unless $found;
+}
+
+exit 0;
+
+__END__
+
+=head1 NAME
+
+comet2 - A simple implementation of COMET II simulator in Perl
+
+=head1 SYNOPSIS
+
+comet2 [-qQhv] [file]
+
+=head1 DESCRIPTION
+
+This manual page documents B<comet2>, a simple implementation of COMET II
+simulator written in Perl.  B<comet2> emulates the operation of the
+COMET II, which is a virtual computer designed for use in a qualifying
+examination called as Japan Information-Technology Engineers
+Examination.
+
+All instructions of the COMET II is defined in the specification
+document, which should be available from a legally incorporated
+organization: Japan Information-Technology Engineers Examination
+Center (JITEC), 1-16-4, Toranomon, Tokyo, 106, Japan, +81-3-3591-0421,
+http://www.jitec.jipdec.or.jp/.
+
+=head1 OPTIONS
+
+=over 4
+
+=item C<-q>
+
+Quiet mode. B<comet2> displays its version number and copyright notice
+when it is invoked and status of all registers.  This option
+suppresses this banner message as well as status of registers. Prompts
+for IN/OUT macros are displayed.  You have to specify .com file when
+using -q option.
+
+=item C<-Q>
+
+More quiet mode. Similar to -q, but no prompt is displayed.
+You have to specify .com file when using -Q option.
+
+=item C<-v>
+
+B<comet2> displays version and exits.
+
+=item C<-h>
+
+B<comet2> displays usage and exits.
+
+=back
+
+=head1 STARTING UP
+
+At start-up time, B<comet2> reads a COMET II object code in I<file>
+into its memory if I<file> is specified.  B<comet2> then display its
+version number and copyright notice followed by current values of all
+registers.  Current values of all registers are displayed, for
+example, as follows.
+
+  PR  #0000 [ NOP                      ]
+  SP  #ff00(  -256)  FR  001  (     1)
+  GR0 #0000(     0)  GR1 #0000(     0)  GR2 #0000(     0)  GR3 #0000(     0)
+  GR4 #0000(     0)  GR5 #0000(     0)  GR6 #0000(     0)  GR7 #0000(     0)
+
+As shown above, the name of each register followed by its value in
+both hexadecimal and decimal formats.  For the PC register, a
+disassembled code at the current PC is shown in square brackets,
+instead of its decimal representation.
+
+B<comet2> finally wait for input from the user.  See L<"COMMANDS"> for
+the detailed explanation of all available commands.
+
+=head1 COMMANDS
+
+This section documents all commands supported by B<comet2>.  B<comet2>
+is not simply a COMET II simulator but has features as a debugger.  Since
+B<comet2> adopts GNU B<gdb>-like interface and commands, those who are
+familiar with B<gdb> could use B<comet2> without hassle.  If you are
+new to a debugger, refer to the reference manual of B<gdb> or L<gdb>
+to learn the basic notion of debuggers.
+
+For ease of use, B<comet2> allows users to use abbreviations for all
+commands as B<gdb> does.  For instance, the command C<d> is equivalent
+to C<delete>.  Use the C<help> command to list all available commands
+and their corresponding abbreviations.
+
+In what follows, all available commands are described in order of
+importance and/or frequency of use, not in the alphabetical order.
+Henceforth, it is recommended to learn commands from top to bottom.
+Note that an abbreviation for each command is given in parentheses,
+and optional arguments are shown in square brackets.  Note also that
+numerical arguments can be written in either decimal or hexadecimal
+format.  For instance, 12345 can be written as either C<12345>,
+C<+12345>, or C<#3039>.
+
+=over 4
+
+=item B<help (h)>
+
+This command displays a summary of available commands.
+
+=item B<quit (q)>
+
+Execution of B<comet2> is terminated by this command.
+
+=item B<file (f)> I<file>
+
+Issuing this command opens the COMET II object file, I<file>, and read
+its contents into the memory.  If I<file> is not a valid COMET II object
+file, B<comet2> simply terminates its execution.  Note that the other
+areas of the memory space and values of registers are kept unchanged.
+
+=item B<step (s)> [I<count>]
+
+This command enables step-by-step execution of each instruction
+starting from the PC register.  The optional numerical argument
+I<count> allows to repeatedly execute each instruction I<count> times.
+
+=item B<print(p)>
+
+Values of all registers (i.e., GR0, GR1, GR2, GR3, ..., GR7, PC, SP,
+and FR) are displayed by this command. See L<"STARTING UP"> for the
+explanation of this information.
+
+=item B<memory (m)> I<address> I<value>
+
+This command takes two numerical arguments, I<address> and I<value>,
+and replaces the value of the memory at I<address> with I<value>.
+
+=item B<disasm (di)> [I<address>]
+
+This command disassembles 16 instructions from I<address>, and
+displays the result to the standard output.  If C<address> is omitted,
+disassemble starts from the current value of the PC registers.
+
+=item B<break (b)> I<address>
+
+This command adds a new breakpoint at C<address>.  A list of all
+breakpoints can be seen by issuing the C<info> command.
+
+=item B<run (r)>
+
+This command starts execution of instructions from the PC without
+user's interaction.  When the PC reaches one of breakpoints that is
+previously defined by the C<break> command, B<comet2> stops its
+execution and then waits for input from the user.
+
+=item B<jump (j)> I<address>
+
+This command allows to jump the PC registers to the specified
+I<address>.
+
+=item B<delete (d)> [I<number>]
+
+This command removes the C<number>-th breakpoint from the list of
+breakpoints.  Note that a breakpoint number can be seen by the C<info>
+command.  If no argument is given, all breakpoints are cleared after
+confirmation.
+
+=item B<info (i)>
+
+All currently-defined breakpoints are listed by this command.
+
+=item B<dump (du)> [I<address>]
+
+This command dumps 256 bytes of the memory from I<address> in both
+hexadecimal and ASCII formats.  If I<address> is not given, the value
+of the PC register is used instead.
+
+=item B<stack (st)>
+
+This command is identical to the C<dump> command except that the
+memory dump always starts from the top of the stack space (i.e., the
+GR4 register).  Note that this command does not take any argument.
+
+=back
+
+=head1 SEE ALSO
+
+casl2(1)
+
+=head1 AUTHOR
+
+Hiroyuki Ohsaki <oosaki@ist.osaka-u.ac.jp>
+Osamu Mizuno <o-mizuno@kit.ac.jp>
+
+=cut
