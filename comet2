@@ -4,8 +4,10 @@
 # Copyright (c) 1997-2000, Hiroyuki Ohsaki.
 # All rights reserved.
 #
-# $Id: comet2,v 1.15 2008/09/11 17:28:28 o-mizuno Exp $
-#
+# A simple implementation of COMET II emulator.
+# Copyright (c) 2001-2021, Osamu Mizuno.
+# All rights reserved.
+# Extended by Osamu Mizuno for COMET II compatibility (2001-2021).
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,9 +22,6 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-# A simple implementation of COMET II emulator.
-# Extended by Osamu Mizuno for COMET II compatibility (2001-2008).
 
 use Getopt::Std;
 use File::Basename;

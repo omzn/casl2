@@ -4,8 +4,9 @@
 # Copyright (c) 1997-2000, Hiroyuki Ohsaki.
 # All rights reserved.
 #
-# $Id: casl2,v 1.19 2008/09/19 03:00:49 o-mizuno Exp $
-#
+# A simple implementation of CASL II assembler.
+# Based on a simple implementation of CASL assembler.
+# Extended by Osamu Mizuno for CASL II compatibility (2001-2021).
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,10 +22,6 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
-# A simple implementation of CASL II assembler.
-# Based on a simple implementation of CASL assembler.
-# Extended by Osamu Mizuno for CASL II compatibility (2001-2008).
-#
 
 use Getopt::Std;
 use File::Basename;
@@ -82,7 +79,7 @@ my %INSTTBL = (    # COMET II instructions
 my $SYS_IN  = 0xfff0;
 my $SYS_OUT = 0xfff2;
 
-my $VERSION = '1.1.1 (12 Sep 2008)';
+my $VERSION = '1.1.2 (4 Oct 2021)';
 my $DEBUG   = 0;
 my $DDEBUG  = 0;
 
@@ -135,9 +132,21 @@ sub expand_label {
     elsif ( defined $hashref->{$val} ) {
         $val = $hashref->{$val}->{val};
     }
+    elsif ($val =~/^CALL_(.*)$/) {
+        my $lbl = $1;
+        if ( defined $hashref->{$lbl} ) {
+            $val = $hashref->{$lbl}->{val};
+        }
+        elsif ($val =~/\.([A-Za-z\d]+)$/) {
+            my $k = "$1.$1";
+            if (defined $hashref->{$k}) {        
+                $val = $hashref->{$k}->{val};
+            }
+        }
+    }
     if ( $val !~ /^[+-]?\d+$/ ) {
         my $sym = $val;
-        if ( $val =~ /^([A-Za-z\d]+)\.([A-Za-z\d]+)$/ ) {
+        if ( $val =~ /([A-Za-z\d]+)\.([A-Za-z\d]+)$/ ) {
             if ( $1 eq $2 ) {
                 $sym = "$2";
             }
@@ -439,7 +448,7 @@ sub pass1 {
                 if ( $opr[0] !~ /^GR[0-7]$/ && $opr[0] =~ /^[A-Z][a-zA-Z0-9]*/ )
                 {
                     if ( $inst =~ /CALL/i ) {
-                        $opr[0] = $opr[0] . "." . $opr[0];
+                        $opr[0] = "CALL_". $var_scope . "." . $opr[0];
                     }
                     else {
                         $opr[0] = $var_scope . "." . $opr[0];
@@ -811,7 +820,7 @@ sub pass2 {
         for ( sort { $a <=> $b } keys %where ) {
             my $label = $where{$_};
 
-            $label =~ /^([A-Za-z\d]+)\.([A-Za-z\d]+)$/;
+            $label =~ /([A-Za-z\d]+)\.([A-Za-z\d]+)$/;
             my $label_view;
             if ( $1 eq $2 ) {
                 $label_view = "$2";
@@ -836,8 +845,6 @@ getopts('av') || usage;
 
 if ($::opt_v) {
     print "This is CASL II, version $VERSION.\n";
-    print "Copyright (c) 2001-2008, Osamu Mizuno.\n";
-    print "All rights reserved.\n";
     exit 0;
 }
 

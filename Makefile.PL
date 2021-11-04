@@ -10,7 +10,7 @@
 use ExtUtils::MakeMaker;
 
 WriteMakefile(NAME      => 'casl2',
-	      VERSION   => '20080919',
+	      VERSION   => '20211104',
 	      linkext   => { LINKTYPE => '' },
 	      PREFIX    => '~',
 	      dist      => { COMPRESS => 'bzip2', SUFFIX => 'bz2' },

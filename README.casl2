@@ -28,7 +28,10 @@ Availability
     http://se.is.kit.ac.jp/~o-mizuno/
 
 Copyright
+    CASL assembler / COMET emulator
     Copyright (C) 1998-2000 Hiroyuki Ohsaki (oosaki@ist.osaka-u.ac.jp)
+    CASL II assembler / COMET II emulator
+    Copyright (C) 2001-2021 Osamu Mizuno (o-mizuno@kit.ac.jp)
 
     This program is free software; you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by the
@@ -76,4 +79,5 @@ References
     casl2(1), comet2(1)
 
 Author
-    Osamu Mizuno (o-mizuno at se.is.kit.ac.jp)
+    Hiroyuki Ohsaki (oosaki@ist.osaka-u.ac.jp)
+    Osamu Mizuno (o-mizuno at kit.ac.jp)
