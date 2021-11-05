@@ -40,6 +40,10 @@ my %INSTTBL = (    # COMET II instructions
     'SUBA' => { code => 0x21, type => 'op5' },
     'ADDL' => { code => 0x22, type => 'op5' },
     'SUBL' => { code => 0x23, type => 'op5' },
+    'MULA' => { code => 0x28, type => 'op5' },
+    'DIVA' => { code => 0x29, type => 'op5' },
+    'MULL' => { code => 0x2A, type => 'op5' },
+    'DIVL' => { code => 0x2B, type => 'op5' },
     'AND'  => { code => 0x30, type => 'op5' },
     'OR'   => { code => 0x31, type => 'op5' },
     'XOR'  => { code => 0x32, type => 'op5' },
@@ -79,7 +83,7 @@ my %INSTTBL = (    # COMET II instructions
 my $SYS_IN  = 0xfff0;
 my $SYS_OUT = 0xfff2;
 
-my $VERSION = '1.1.2 (4 Oct 2021)';
+my $VERSION = '1.1.2 kit (Nov 4 2021)';
 my $DEBUG   = 0;
 my $DDEBUG  = 0;
 

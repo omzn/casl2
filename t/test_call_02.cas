@@ -1,0 +1,22 @@
+;実教出版株式会社 情報処理技術者テキスト プログラミング入門 CASL2 第一版 P152
+RPG0601 START
+        RPUSH
+        CALL    PRINT
+        CALL    PRINT
+        CALL    PRINT
+        RPOP
+        RET
+;
+PRINT   OUT     MSG,LEN
+        RET
+MSG     DC      'Subroutine Test 1'
+LEN     DC      17
+        RET
+        END
+
+PRINT   START
+        OUT    MSG,LEN
+        RET
+MSG     DC      'Subroutine Test 2'
+LEN     DC      17
+        END

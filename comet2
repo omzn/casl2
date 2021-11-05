@@ -49,6 +49,14 @@ my %INSTTBL = (    # COMET instructions
     '0x25' => { id => 'SUBA', type => 'op5' },
     '0x26' => { id => 'ADDL', type => 'op5' },
     '0x27' => { id => 'SUBL', type => 'op5' },
+    '0x28' => { id => 'MULA', type => 'op1' },
+    '0x29' => { id => 'DIVA', type => 'op1' },
+    '0x2a' => { id => 'MULL', type => 'op1' },
+    '0x2b' => { id => 'DIVL', type => 'op1' },
+    '0x2c' => { id => 'MULA', type => 'op5' },
+    '0x2d' => { id => 'DIVA', type => 'op5' },
+    '0x2e' => { id => 'MULL', type => 'op5' },
+    '0x2f' => { id => 'DIVL', type => 'op5' },
     '0x30' => { id => 'AND',  type => 'op1' },
     '0x31' => { id => 'OR',   type => 'op1' },
     '0x32' => { id => 'XOR',  type => 'op1' },
@@ -123,7 +131,7 @@ my %CMDTBL = (
     'h|help'    => { subr => \&cmd_help,   list => 0 },
 );
 
-my $VERSION = '1.1.0 (11 Sep 2008)';
+my $VERSION = '1.2.0 kit (Nov 5, 2021)';
 my $DEBUG   = 0;
 
 sub usage {
@@ -443,6 +451,108 @@ sub step_exec {
             $pc += 1;
         }
 
+    }
+    elsif ( $inst eq 'MULA' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] = signed( $regs[$gr] );
+            $regs[$gr] *= mem_get( $memoryp, $eadr );
+            my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 2;
+
+        }
+        else {
+            $regs[$gr] = signed( $regs[$gr] );
+            $regs[$xr] = signed( $regs[$xr] );
+            $regs[$gr] *= $regs[$xr];
+            my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $regs[$xr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 1;
+        }
+    }
+    elsif ( $inst eq 'MULL' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] *= mem_get( $memoryp, $eadr );
+            my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 2;
+        }
+        else {
+            $regs[$gr] *= $regs[$xr];
+            my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+            my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+            $regs[$gr] &= 0xffff;
+            $regs[$xr] &= 0xffff;
+            $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            $pc += 1;
+        }
+    }
+    elsif ( $inst eq 'DIVA' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            $regs[$gr] = signed( $regs[$gr] );
+            my $m = mem_get( $memoryp, $eadr );
+            if ($m == 0)  {
+                $fr = $FR_OVER | $FR_ZERO ;
+            } else {
+                $regs[$gr] /= $m;
+                my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+                my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+                $regs[$gr] &= 0xffff;
+                $regs[$gr] &= 0xffff;
+                $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            }
+            $pc += 2;
+        }
+        else {
+            $regs[$gr] = signed( $regs[$gr] );
+            $regs[$xr] = signed( $regs[$xr] );
+            if ($regs[$xr] == 0)  {
+                $fr = $FR_OVER | $FR_ZERO ;
+            } else {
+                $regs[$gr] /= $regs[$xr];
+                my $ofr1 = $regs[$gr] > $MAX_SIGNED ? $FR_OVER : 0;
+                my $ofr2 = $regs[$gr] < $MIN_SIGNED ? $FR_OVER : 0;
+                $regs[$gr] &= 0xffff;
+                $regs[$xr] &= 0xffff;
+                $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            }
+            $pc += 1;
+        }
+    }
+    elsif ( $inst eq 'DIVL' ) {
+        if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
+            my $m = mem_get( $memoryp, $eadr );
+            if ($m == 0)  {
+                $fr = $FR_OVER | $FR_ZERO ;
+            } else {
+                $regs[$gr] /= $m;
+                my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+                my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+                $regs[$gr] &= 0xffff;
+                $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            }
+            $pc += 2;
+        }
+        else {
+            if ($regs[$xr] == 0)  {
+                $fr = $FR_OVER | $FR_ZERO ;
+            } else {
+                $regs[$gr] /= $regs[$xr];
+                my $ofr1 = $regs[$gr] > 0xffff ? $FR_OVER : 0;
+                my $ofr2 = $regs[$gr] < 0      ? $FR_OVER : 0;
+                $regs[$gr] &= 0xffff;
+                $regs[$xr] &= 0xffff;
+                $fr = get_flag( $regs[$gr] ) | $ofr1 | $ofr2;
+            }
+            $pc += 1;
+        }
     }
     elsif ( $inst eq 'AND' ) {
         if ( $opr !~ /GR[0-7], GR[0-7]/ ) {
