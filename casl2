@@ -145,7 +145,7 @@ sub expand_label {
         if ( defined $hashref->{$lbl} ) {
             $val = $hashref->{$lbl}->{val};
         }
-        elsif ($val =~/:([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*)$/) {
+        elsif ($val =~/:([a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*)$/) {
             my $k = "$1:$1";
             if (defined $hashref->{$k}) {        
                 $val = $hashref->{$k}->{val};
@@ -154,7 +154,7 @@ sub expand_label {
     }
     if ( $val !~ /^[+-]?\d+$/ ) {
         my $sym = $val;
-        if ( $val =~ /^([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*):([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*)$/ ) {
+        if ( $val =~ /^([a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*):([a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*)$/ ) {
             if ( $1 eq $2 ) {
                 $sym = "$2";
             }
@@ -432,7 +432,7 @@ sub pass1 {
                     }
                     print STDERR "LITERAL: $opr[1]\n" if $DEBUG;
                 }
-                elsif ($opr[1] =~ /^[A-Z][a-zA-Z0-9]*/
+                elsif ($opr[1] =~ /^[a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*/
                     && $opr[1] !~ /^GR[0-7]$/i )
                 {
                     $opr[1] = $var_scope . ":" . $opr[1];
@@ -453,7 +453,7 @@ sub pass1 {
 
                 $opr[1] = 0 unless defined( $opr[1] );
 
-                if ( $opr[0] !~ /^GR[0-7]$/i && $opr[0] =~ /^[a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*/ )
+                if ( $opr[0] !~ /^GR[0-7]$/i && $opr[0] =~ /^[a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*/ )
                 {
                     if ( $inst =~ /CALL/i ) {
                         $opr[0] = "CALL_". $var_scope . ":" . $opr[0];
@@ -513,7 +513,7 @@ sub pass1 {
                     print STDERR "LITERAL: $opr[1]\n" if $DDEBUG;
                 }
                 elsif ($opr[1] !~ /^GR[0-7]$/i
-                    && $opr[1] =~ /^[a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*/ )
+                    && $opr[1] =~ /^[a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*/ )
                 {
                     $opr[1] = $var_scope . ":" . $opr[1];
                 }
@@ -622,8 +622,8 @@ sub pass1 {
                                 $address++;
                             }
                         }
-                        elsif ( $opr[$_] =~ /^[A-Z][a-zA-Z\d]*$/ ) {
-                            $opr[$_] = $var_scope . "." . $opr[$_];
+                        elsif ( $opr[$_] =~ /^[a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*$/ ) {
+                            $opr[$_] = $var_scope . ":" . $opr[$_];
                             gen_code1( $memoryp, $address, $opr[$_] );
                             $address++;
                         }
@@ -800,7 +800,7 @@ sub pass2 {
         print OUT pack( 'n', $val );
 
         my @aLine = split( /\t/, $$bufp[$__line] );
-        if ( $aLine[0] =~ /:([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*)$/ ) {
+        if ( $aLine[0] =~ /:([a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*)$/ ) {
             $aLine[0] = $1;
         }
         my $bufline = join( "\t", @aLine );
@@ -830,7 +830,7 @@ sub pass2 {
         for ( sort { $a <=> $b } keys %where ) {
             my $label = $where{$_};
 
-            $label =~ /([A-Za-z\d]+)\.([A-Za-z\d]+)$/;
+            $label =~ /([a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*):([a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*)$/;
             my $label_view;
             if ( $1 eq $2 ) {
                 $label_view = "$2";
