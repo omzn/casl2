@@ -80,10 +80,14 @@ my %INSTTBL = (    # COMET II instructions
 
 # addresses of IN/OUT system calls --- these MACROs are expanded
 # to call this address after pushing its arguments on stack.
-my $SYS_IN  = 0xfff0;
-my $SYS_OUT = 0xfff2;
+my $SYS_IN   = 0xfff0;
+my $SYS_OUT  = 0xfff2;
+my $EXIT_USR = 0x0000;
+my $EXIT_OVF = 0x0001;
+my $EXIT_DVZ = 0x0002;
+my $EXIT_ROV = 0x0003;
 
-my $VERSION = '1.1.2 kit (Nov 4 2021)';
+my $VERSION = '1.3.0 kit (July 13 2022)';
 my $DEBUG   = 0;
 my $DDEBUG  = 0;
 
@@ -121,7 +125,7 @@ sub check_label {
     print STDERR "check_label($label)\n" if $DEBUG;
 
     error "Invalid label \"$label\""
-      unless ( $label =~ /^[A-Z][0-9A-Za-z]{0,7}$/ );
+      unless ( $label =~ /^[a-zA-Z\$\%_\.][0-9a-zA-Z\$\%_\.]*$/ );
 }
 
 # Expand the string VAL to corresponding decimal number --- symbol is
@@ -141,8 +145,8 @@ sub expand_label {
         if ( defined $hashref->{$lbl} ) {
             $val = $hashref->{$lbl}->{val};
         }
-        elsif ($val =~/\.([A-Za-z\d]+)$/) {
-            my $k = "$1.$1";
+        elsif ($val =~/:([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*)$/) {
+            my $k = "$1:$1";
             if (defined $hashref->{$k}) {        
                 $val = $hashref->{$k}->{val};
             }
@@ -150,7 +154,7 @@ sub expand_label {
     }
     if ( $val !~ /^[+-]?\d+$/ ) {
         my $sym = $val;
-        if ( $val =~ /([A-Za-z\d]+)\.([A-Za-z\d]+)$/ ) {
+        if ( $val =~ /^([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*):([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*)$/ ) {
             if ( $1 eq $2 ) {
                 $sym = "$2";
             }
@@ -172,7 +176,7 @@ sub add_label {
     check_label($label);
 
     # On addition of a label, add var_scope.
-    my $uniq_label = $var_scope . "." . $label;
+    my $uniq_label = $var_scope . ":" . $label;
     error "Label \"$label\" already defined"
       if ( defined $hashref->{$uniq_label} );
     $hashref->{$uniq_label} = { val => $val, file => $__file, line => $__line };
@@ -186,7 +190,7 @@ sub update_label {
     my ( $hashref, $label, $val ) = @_;
 
     check_label($label);
-    my $uniq_label = $var_scope . "." . $label;
+    my $uniq_label = $var_scope . ":" . $label;
     error "Label \"$label\" is not defined"
       if ( !defined $hashref->{$uniq_label} );
     $hashref->{$uniq_label} = { val => $val, file => $__file, line => $__line };
@@ -219,7 +223,7 @@ sub check_register {
 
     print STDERR "check_register($register)\n" if $DEBUG;
     error "Invalid register \"$register\""
-      if ( $register !~ /^(GR)?([0-7])$/ );
+      if ( $register !~ /^(GR)?([0-7])$/i );
     return $2;
 }
 
@@ -317,7 +321,7 @@ sub pass1 {
         # keep every line in @buf for later use
         my $uniq_label;
         if ( $label ne '' ) {
-            $uniq_label = $var_scope . "." . $label;
+            $uniq_label = $var_scope . ":" . $label;
         }
         else {
             $uniq_label = '';
@@ -399,7 +403,7 @@ sub pass1 {
 
             # GR0 cannot be used as an index register.
             error "Can't use GR0 as an index register"
-              if ( defined $opr[2] and $opr[2] =~ /^(GR)?0$/ );
+              if ( defined $opr[2] and $opr[2] =~ /^(GR)?0$/i );
 
             # instructions with GR, adr, and optional XR
             if ( $type eq 'op1' ) {
@@ -429,9 +433,9 @@ sub pass1 {
                     print STDERR "LITERAL: $opr[1]\n" if $DEBUG;
                 }
                 elsif ($opr[1] =~ /^[A-Z][a-zA-Z0-9]*/
-                    && $opr[1] !~ /^GR[0-7]$/ )
+                    && $opr[1] !~ /^GR[0-7]$/i )
                 {
-                    $opr[1] = $var_scope . "." . $opr[1];
+                    $opr[1] = $var_scope . ":" . $opr[1];
                 }
 
                 gen_code2( $memoryp, $address, $INSTTBL{$inst}->{code},
@@ -445,17 +449,17 @@ sub pass1 {
                 error "Invalid operand \"$opr\""
                   unless ( 0 <= $#opr and $#opr <= 1 );
                 error "Can't use GR0 as an index register"
-                  if ( defined $opr[1] and $opr[1] =~ /^(GR)?0$/ );
+                  if ( defined $opr[1] and $opr[1] =~ /^(GR)?0$/i );
 
                 $opr[1] = 0 unless defined( $opr[1] );
 
-                if ( $opr[0] !~ /^GR[0-7]$/ && $opr[0] =~ /^[A-Z][a-zA-Z0-9]*/ )
+                if ( $opr[0] !~ /^GR[0-7]$/i && $opr[0] =~ /^[a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*/ )
                 {
                     if ( $inst =~ /CALL/i ) {
-                        $opr[0] = "CALL_". $var_scope . "." . $opr[0];
+                        $opr[0] = "CALL_". $var_scope . ":" . $opr[0];
                     }
                     else {
-                        $opr[0] = $var_scope . "." . $opr[0];
+                        $opr[0] = $var_scope . ":" . $opr[0];
                     }
                 }
 
@@ -508,14 +512,14 @@ sub pass1 {
                     }
                     print STDERR "LITERAL: $opr[1]\n" if $DDEBUG;
                 }
-                elsif ($opr[1] !~ /^GR[0-7]$/
-                    && $opr[1] =~ /^[A-Z][a-zA-Z0-9]*/ )
+                elsif ($opr[1] !~ /^GR[0-7]$/i
+                    && $opr[1] =~ /^[a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*/ )
                 {
-                    $opr[1] = $var_scope . "." . $opr[1];
+                    $opr[1] = $var_scope . ":" . $opr[1];
                 }
 
                 # instructions with GR, GR.
-                if ( $opr[1] =~ /^GR[0-7]$/ ) {
+                if ( $opr[1] =~ /^GR[0-7]$/i ) {
                     my $instcode = $INSTTBL{$inst}->{code} + 4;
                     gen_code3( $memoryp, $address, $instcode,
                         $opr[0], $opr[1] );
@@ -536,7 +540,7 @@ sub pass1 {
 
                 if ( $first_start == 1 ) {
                     $first_start = 0;
-                    $memoryp->{-1} = (@opr) ? $label . "." . $opr[0] : 0;
+                    $memoryp->{-1} = (@opr) ? $label . ":" . $opr[0] : 0;
                 }
                 else {
                     $actual_label  = (@opr) ? $opr[0] : 0;
@@ -628,6 +632,8 @@ sub pass1 {
                             $address++;
                         }
                     }
+                    gen_code1( $memoryp, $address, 0 );
+                    $address++;
 
                     #                } elsif ($#opr == 0) {  # number or label
                     #                    gen_code1($memoryp, $address, $opr[0]);
@@ -646,8 +652,8 @@ sub pass1 {
                 check_label( $opr[0] );
                 check_label( $opr[1] );
 
-                $opr[0] = $var_scope . "." . $opr[0];
-                $opr[1] = $var_scope . "." . $opr[1];
+                $opr[0] = $var_scope . ":" . $opr[0];
+                $opr[1] = $var_scope . ":" . $opr[1];
 
                 # IN/OUT macro is expanded to push two operands onto the
                 # stack, call SYS_IN / SYS_OUT, and restore stack.
@@ -794,7 +800,7 @@ sub pass2 {
         print OUT pack( 'n', $val );
 
         my @aLine = split( /\t/, $$bufp[$__line] );
-        if ( $aLine[0] =~ /\.([A-Za-z\d]+)$/ ) {
+        if ( $aLine[0] =~ /:([a-zA-Z\$%_\.][0-9a-zA-Z\$%_\.]*)$/ ) {
             $aLine[0] = $1;
         }
         my $bufline = join( "\t", @aLine );

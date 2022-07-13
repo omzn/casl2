@@ -1,5 +1,6 @@
 ;実教出版株式会社 情報処理技術者テキスト プログラミング入門 CASL2 第一版 P152
 RPG0601 START
+	LAD	GR1,15,GR1
         RPUSH
         CALL    PRINT
         CALL    PRINT
@@ -11,5 +12,6 @@ PRINT   OUT     MSG,LEN
         RET
 MSG     DC      'Subroutine Test 1'
 LEN     DC      17
+HEX     DC      #000A
         RET
         END
